@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # --- INFRASTRUCTURE TOOLS ---
+
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    container_name: sentinel_mq
+    hostname: rabbitmq
+    ports:
+      - "5672:5672" # App connection
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: passme123
+    networks:
+      - sentinel_net
+    healthcheck:
+      test: [ "CMD", "rabbitmqctl", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: sentinel_redis
+    hostname: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - sentinel_net
+
+  postgres:
+    image: postgres:15.14-alpine3.21
+    container_name: sentinel_db
+    hostname: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: passme123
+      POSTGRES_DB: sentinel_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - sentinel_db_data:/var/lib/postgresql/data
+      # Mount init script to auto-create tables on first startup
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:z
+    networks:
+      - sentinel_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vault:
+    image: hashicorp/vault:latest
+    container_name: sentinel_vault
+    hostname: vault
+    ports:
+      - "8200:8200"
+    environment:
+      # Dev mode for immediate usage (no unseal required)
+      VAULT_DEV_ROOT_TOKEN_ID: root_token
+      VAULT_ADDR: 'http://0.0.0.0:8200'
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - sentinel_net
+  # --- APPLICATION CONTAINERS ---
+
+  # producer:
+  #   build: .
+  #   container_name: sentinel_producer
+  #   command: python services/producer.py
+  #   restart: on-failure
+  #   environment:
+  #     - RABBITMQ_HOST=rabbitmq
+  #     - RABBITMQ_USER=user
+  #     - RABBITMQ_PASS=password
+  #     - VAULT_ADDR=http://vault:8200
+  #     - VAULT_TOKEN=root_token
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #   networks:
+  #     - sentinel_net
+
+  # worker:
+  #   build: .
+  #   container_name: sentinel_worker
+  #   command: python services/worker.py
+  #   restart: on-failure
+  #   environment:
+  #     - RABBITMQ_HOST=rabbitmq
+  #     - REDIS_HOST=redis
+  #     - DB_HOST=timescaledb
+  #     - VAULT_ADDR=http://vault:8200
+  #     - VAULT_TOKEN=root_token
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_started
+  #   networks:
+  #     - sentinel_net
+
+  # dashboard:
+  #   build: .
+  #   container_name: sentinel_dashboard
+  #   command: python app.py
+  #   ports:
+  #     - "8050:8050"
+  #   environment:
+  #     - REDIS_HOST=redis
+  #     - MOCK_MODE=False
+  #   depends_on:
+  #     - redis
+  #   networks:
+  #     - sentinel_net
+
+  # --- NETWORKING & STORAGE ---
+volumes:
+  sentinel_db_data:
+
+
+networks:
+  sentinel_net:
+    driver: bridge
