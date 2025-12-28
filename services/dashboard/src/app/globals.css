@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* iOS Light Glass Theme */
+    --background: 210 20% 98%;
+    --foreground: 224 71.4% 4.1%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+    --primary: 270 100% 60%;
+    --secondary: 160 100% 40%;
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+    --border: 220 13% 91%;
+    --radius: 1.25rem;
+  }
+
+  .dark {
+    /* Deep Space Theme */
+    --background: 260 50% 4%;
+    --foreground: 260 20% 98%;
+    --card: 260 40% 6%;
+    --card-foreground: 260 20% 98%;
+    --primary: 270 100% 60%;
+    --secondary: 160 100% 45%;
+    --muted: 260 30% 12%;
+    --muted-foreground: 260 10% 70%;
+    --border: 260 30% 15%;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background-color: rgba(255, 255, 255, 0.4);
+    backdrop-filter: blur(40px);
+    /* blur-2xl approx */
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    /* shadow-2xl */
+  }
+
+  /* Dark mode overrides */
+  @media (prefers-color-scheme: dark) {
+    .glass-panel {
+      background-color: hsla(260, 40%, 6%, 0.4);
+      /* card color with opacity */
+      border-color: rgba(255, 255, 255, 0.05);
+    }
+  }
+
+  :is(.dark .glass-panel) {
+    background-color: hsla(260, 40%, 6%, 0.4);
+    border-color: rgba(255, 255, 255, 0.05);
+  }
+
+  .glass-card {
+    background-color: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(12px);
+    /* blur-md */
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    transition: all 0.3s;
+  }
+
+  :is(.dark .glass-card) {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+}

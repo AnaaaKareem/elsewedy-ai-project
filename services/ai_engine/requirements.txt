@@ -1,0 +1,13 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+requests
+pandas
+fredapi
+psycopg2
+pika
+hvac
+redis
+numpy
+scikit-learn
+pulp
+torch
+xgboost

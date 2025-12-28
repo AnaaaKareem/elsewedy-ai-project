@@ -1,0 +1,21 @@
+# Ignore everything by default
+*
+
+# Allow directories needed for build
+!services/
+!shared/
+
+# Ignore specific heavy/local folders within allowed directories
+services/dashboard/node_modules
+services/*/venv
+services/*/__pycache__
+shared/__pycache__
+
+# Ignore root level clutter
+.git
+.env
+.DS_Store
+documents/
+legacy/
+*.md
+docker-compose.yml
