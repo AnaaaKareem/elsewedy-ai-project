@@ -1,5 +1,7 @@
 import pickle
 import os
+import json
+from datetime import datetime
 
 try:
     import xgboost as xgb
@@ -34,12 +36,14 @@ class SentinelGBMModel:
         self.engine = engine
         if HAS_ML:
             if engine == "XGBoost":
-                self.model = xgb.XGBRegressor(n_estimators=100, max_depth=5, eta=0.1)
+                # PRODUCTION UPDATE: Increased estimators to 1000
+                self.model = xgb.XGBRegressor(n_estimators=1000, max_depth=6, eta=0.05)
             else:
                 # Fallback or alternative
                 self.model = lgb.LGBMRegressor()
         else:
             self.model = "MOCK_GBM_OBJECT"
+        self.metadata = {}
 
     def train(self, X, y):
         """
@@ -63,6 +67,16 @@ class SentinelGBMModel:
         with open(os.path.join(d, f"{filename}.pkl"), "wb") as f:
             pickle.dump(self.model, f)
         print(f"💾 Saved: {d}/{filename}.pkl")
+        
+        # Save Metadata Sidecar
+        meta_path = os.path.join(d, f"{filename}_meta.json")
+        # Ensure we have a timestamp
+        if not self.metadata.get('last_updated'):
+             self.metadata['last_updated'] = datetime.now().isoformat()
+             
+        with open(meta_path, "w") as f:
+            json.dump(self.metadata, f)
+        print(f"   + Metadata: {meta_path}")
 
     def load_weights(self, filename):
         """Load model pickle."""
@@ -74,6 +88,15 @@ class SentinelGBMModel:
             with open(path, "rb") as f:
                 self.model = pickle.load(f)
             print(f"✅ Loaded: {path}")
+            
+            # Load Metadata Sidecar
+            meta_path = os.path.join(d, f"{filename}_meta.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, "r") as f:
+                    self.metadata = json.load(f)
+                print(f"   + Metadata: Last Updated {self.metadata.get('last_updated')}")
+            else:
+                self.metadata = {}
 
     def train_online(self, X_new, y_new, save_interval=10, step_count=0):
         """
@@ -95,5 +118,6 @@ class SentinelGBMModel:
             pass # Mock Online Update
         
         if step_count > 0 and step_count % save_interval == 0:
+            self.metadata['last_updated'] = datetime.now().isoformat()
             self.save_weights("polymer_xgb_checkpoint")
             print(f"🔄 Checkpoint saved at step {step_count}")

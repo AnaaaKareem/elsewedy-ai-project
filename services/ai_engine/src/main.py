@@ -19,6 +19,7 @@ from infrastructure.config import config
 from ai_models.model_factory import ModelFactory
 from data_sources.unified_sentinel import UnifiedSentinel
 from logic.optimizer import SentinelOptimizer
+from logic.model_synchronizer import ModelSynchronizer
 
 """
 Inference Worker Service.
@@ -47,8 +48,11 @@ def get_inference_input(category, current_price, material_name=None):
     Returns:
         list or np.array: The formatted input for the model.
     """
+    # Mock FX Rate (In prduction, fetch via Sentinel)
+    egp_usd_rate = 50.5 # 1 USD = 50.5 EGP (Scenario)
+
     if category == 'Polymer':
-        # XGBoost needs: [Current_Price, Oil_Price, Construction_Index]
+        # XGBoost needs: [Current_Price, Oil_Price, Construction_Index, EGP_USD]
         # 1. Fetch Real Driver Data (Oil Price)
         driver_str = sentinel.fetch_driver_data('Polymer')
         # Parse "$85.00" from "Oil $85.00"
@@ -64,10 +68,10 @@ def get_inference_input(category, current_price, material_name=None):
         except:
             const_idx = 100.0
 
-        return [[current_price, oil_price, const_idx]] 
+        return [[current_price, oil_price, const_idx, egp_usd_rate]] 
         
     elif category == 'Shielding':
-        # LSTM needs a sequence (e.g., last 5 prices)
+        # LSTM needs a sequence (e.g., last 5 prices) + Scalar Features (FX)
         # Fetch actual history from Yahoo Finance via Sentinel
         if material_name:
             symbol = sentinel.materials[material_name]['symbol']
@@ -78,6 +82,22 @@ def get_inference_input(category, current_price, material_name=None):
                 # Take last 4 historical + current real-time price = 5 steps
                 recent_seq = history.values[-4:].tolist()
                 recent_seq.append(current_price)
+                
+                # FEATURE ENGINEERING UPDATE: Append FX Rate to each step or as valid tensor
+                # For simplicity in this demo, we assume the model accepts (Batch, Seq, Feature)
+                # If model expects 1 feature (Price), we keep as is. 
+                # If we retrained for FX, we'd add it here.
+                # Assuming Model Update: [Price, FX]
+                
+                # Mocking 2D feature vector per step for enhanced model
+                # seq_data = [[p, egp_usd_rate] for p in recent_seq]
+                
+                # NOTE: Since we haven't retrained the LSTM yet, we MUST keep the shape consistent 
+                # or the forward pass will fail. 
+                # We will log the Feature Availability but keep input compatible for now 
+                # until model weights are updated.
+                print(f"   ℹ️ [Feature Eng] EGP/USD ({egp_usd_rate}) ready for Model V2.")
+                
                 return np.array([recent_seq]) # Shape: (1, 5) which becomes (1, 5, 1) in inference
         
         # Fallback if history fetch fails: Pad with current price
@@ -141,12 +161,16 @@ def run_ai_lifecycle(material_name, price):
     # In a real scenario, this would use the *next* price tick. 
     # Here we train on the current price as a self-correction reinforcement for demo.
     try:
-        # Train on a dummy target just to exercise the weight update & save logic
-        loss = 0.0
-        if hasattr(model, 'train_online'):
-             loss = model.train_online(price, price * 1.01, step_count=10) # 10 triggers save check
-        if hasattr(model, 'save_weights'):
-             model.save_weights(f"{category}_latest")
+        # PRODUCTION UPDATE: Disabled "Demo" Online Learning.
+        # Real online learning requires receiving the TRUE price at T+Time and comparing it 
+        # to the PREVIOUS prediction from T-Time. 
+        # The previous code trained on "Current Price * 1.01" which creates a bias.
+        # We disable this loop until a proper Feedback Listener is implemented.
+        pass
+        # if hasattr(model, 'train_online'):
+        #      loss = model.train_online(price, price * 1.01, step_count=10) 
+        # if hasattr(model, 'save_weights'):
+        #      model.save_weights(f"{category}_latest")
     except Exception as e:
         print(f"⚠️ Training/Save Warning: {e}")
 
@@ -293,6 +317,14 @@ import time
 
 if __name__ == "__main__":
     print("🚀 AI Engine Starting (Dispatcher-Worker Architecture)...")
+
+    # --- STARTUP CHECK: Verify & Catch-Up on Lost Data ---
+    try:
+        synchronizer = ModelSynchronizer(sentinel)
+        synchronizer.sync_models()
+    except Exception as e:
+        print(f"⚠️ Synchronization Warning: {e}")
+        print("   Continuing with startup...")
     
     # Start Worker in Background Thread
     worker_thread = threading.Thread(target=start_worker, daemon=True)

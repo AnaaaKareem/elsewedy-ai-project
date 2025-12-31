@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
-import pandas as pd
-from datetime import datetime
 
 # Add parent directory to path to allow importing sibling modules like data_sources
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -41,8 +39,8 @@ def export_data():
     # Note: DB Connection might fail if local Postgres is not running, but we continue for CSV export.
     sentinel = UnifiedSentinel(config.KEYS, db_config=config.DB_CONFIG)
 
-    # Fetch 5 years of history for all configured materials
-    df = sentinel.generate_historical_dataset(time_range='5y')
+    # Fetch 10 years of history for all configured materials
+    df = sentinel.generate_historical_dataset(time_range='10y')
 
     if df.empty:
         print("❌ No data collected. Check API keys or connectivity.")

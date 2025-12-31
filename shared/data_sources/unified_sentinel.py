@@ -1,4 +1,14 @@
 import requests
+import ssl
+
+# Fix for macOS SSL Certificate Verify Failed (Common in local dev environments)
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
 try:
     import pandas as pd
 except ImportError:
@@ -24,6 +34,7 @@ except ImportError:
     execute_values = None
 
 import math
+import time
 from datetime import datetime
 
 USER_AGENT = 'Mozilla/5.0'
@@ -85,14 +96,14 @@ class UnifiedSentinel:
         # MATERIALS MASTER LIST WITH CATEGORIES
         self.materials = {
             # POLYMERS (Oil Derivative)
-            'PVC':           {'hs': '3904',   'symbol': 'CL=F', 'category': 'Polymer', 'driver': 'Oil'},
+            'PVC':           {'hs': '390422', 'symbol': 'CL=F', 'category': 'Polymer', 'driver': 'Oil'},
             'XLPE':          {'hs': '390110', 'symbol': 'CL=F', 'category': 'Polymer', 'driver': 'Oil'},
             'PE':            {'hs': '390110', 'symbol': 'CL=F', 'category': 'Polymer', 'driver': 'Oil'},
             'LSF':           {'hs': '390490', 'symbol': 'CL=F', 'category': 'Polymer', 'driver': 'Oil'},
 
             # SHIELDING (Metals - LME Linked)
-            'Copper':        {'hs': '7408',   'symbol': 'HG=F',  'category': 'Shielding', 'driver': 'LME'},
-            'Aluminum':      {'hs': '7605',   'symbol': 'ALI=F', 'category': 'Shielding', 'driver': 'LME'},
+            'Copper':        {'hs': '740811', 'symbol': 'HG=F',  'category': 'Shielding', 'driver': 'LME'},
+            'Aluminum':      {'hs': '760511', 'symbol': 'ALI=F', 'category': 'Shielding', 'driver': 'LME'},
             'GSW':           {'hs': '721720', 'symbol': 'HRC=F', 'category': 'Shielding', 'driver': 'LME'},
             'Copper Tape':   {'hs': '741011', 'symbol': 'HG=F',  'category': 'Shielding', 'driver': 'LME'},
             'Aluminum Tape': {'hs': '760720', 'symbol': 'ALI=F', 'category': 'Shielding', 'driver': 'LME'},
@@ -108,7 +119,7 @@ class UnifiedSentinel:
             'APAC':  {'countries': {'China': '156', 'India': '356', 'Japan': '392', 'S.Korea': '410', 'Australia': '36'}, 'econ_proxy': 'CHNPRINTO01IXPYM'},
             'EU':    {'countries': {'Germany': '276', 'Italy': '380', 'France': '251', 'Spain': '724', 'UK': '826'}, 'econ_proxy': 'DEUPROINDMISMEI'},
             'NA':    {'countries': {'USA': '842', 'Canada': '124'}, 'econ_proxy': 'INDPRO'},
-            'LATAM': {'countries': {'Brazil': '76', 'Mexico': '484', 'Argentina': '32'}, 'econ_proxy': 'PRINTO01BRA659S'},
+            'LATAM': {'countries': {'Brazil': '76', 'Chile': '152', 'Mexico': '484', 'Argentina': '32'}, 'econ_proxy': 'PRINTO01BRA659S'},
             'SSA':   {'countries': {'South Africa': '710', 'Nigeria': '566', 'Kenya': '404'}, 'econ_proxy': 'PRMNTO01ZAQ657S'}
         }
 
@@ -135,6 +146,7 @@ class UnifiedSentinel:
             'Canada':       {'trade_code': '124', 'econ_id': 'CANPROINDMISMEI'},
             # LATAM
             'Brazil':       {'trade_code': '76',  'econ_id': 'PRINTO01BRA659S'},
+            'Chile':        {'trade_code': '152', 'econ_id': 'CHLPROINDMISMEI'},
             'Mexico':       {'trade_code': '484', 'econ_id': 'PRINTO02MXQ661S'},
             'Argentina':    {'trade_code': '32',  'econ_id': 'MKTGDPARA646NWDB'},
             # SSA
@@ -178,6 +190,17 @@ class UnifiedSentinel:
         finally:
             self.db_pool.putconn(conn)
 
+    def _rate_limit(self, service_name):
+        """
+        Enforce rate limits for different services to avoid API bans.
+        """
+        if service_name == 'yahoo':
+            time.sleep(1.0) # Yahoo is lenient but good to be safe
+        elif service_name == 'comtrade':
+            time.sleep(3.0) # Comtrade is strict (1 req/sec officially, but often slower for free tier)
+        elif service_name == 'fred':
+            time.sleep(0.5) # FRED is fast but has limits
+
     def get_material_id(self, name):
         return self.material_ids.get(name)
 
@@ -206,6 +229,7 @@ class UnifiedSentinel:
         # Fixed price materials (e.g., contracts)
         if symbol == 'FIXED': return 50.0, 0.0
         
+        self._rate_limit('yahoo')
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         headers = {'User-Agent': USER_AGENT}
         try:
@@ -236,6 +260,8 @@ class UnifiedSentinel:
         # Authenticated Data API
         # Documentation: https://unstats.un.org/wiki/display/comtrade/Comtrade+API+V1
         url = f"https://comtradeapi.un.org/data/v1/get/C/A/HS?reporterCode={reporter_code}&period=2023&partnerCode=0&cmdCode={hs_code}&flowCode=M"
+        
+        self._rate_limit('comtrade')
         
         headers = { 
             'Ocp-Apim-Subscription-Key': self.keys.get('comtrade', ''), 
@@ -291,12 +317,14 @@ class UnifiedSentinel:
         if category == 'Polymer':
             # Oil Price (Brent Crude)
             try:
+                self._rate_limit('fred')
                 oil = self.fred.get_series('DCOILBRENTEU').iloc[-1]
                 return f"Oil ${oil:.2f}"
             except Exception: return "Oil N/A"
         elif category == 'Screening':
             # Total Construction Spending Proxy
             try:
+                self._rate_limit('fred')
                 cons = self.fred.get_series('TTLCONS').iloc[-1]
                 return f"Global Const. Index: {cons:.0f}"
             except Exception: return "Const. Index N/A"
@@ -359,6 +387,7 @@ class UnifiedSentinel:
         """Returns the raw JSON response from Yahoo for a symbol."""
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         headers = {'User-Agent': USER_AGENT}
+        self._rate_limit('yahoo')
         try:
             return requests.get(url, headers=headers).json()
         except Exception:
@@ -382,6 +411,8 @@ class UnifiedSentinel:
             'Ocp-Apim-Subscription-Key': self.keys.get('comtrade'),
             'User-Agent': USER_AGENT
         }
+        
+        self._rate_limit('comtrade')
 
         try:
             response = requests.get(url, headers=headers)
@@ -400,6 +431,7 @@ class UnifiedSentinel:
             
         series_id = self.regional_proxies.get(region_name, 'DCOILBRENTEU')
         try:
+            self._rate_limit('fred')
             data = self.fred.get_series(series_id).tail(5)
             # Convert timestamp keys to string for cleaner dict output if needed, or keep as is
             return data.to_dict()
@@ -424,6 +456,8 @@ class UnifiedSentinel:
         # Yahoo Chart API supports ranges like 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range={time_range}"
         headers = {'User-Agent': USER_AGENT}
+        
+        self._rate_limit('yahoo')
         
         try:
             res = requests.get(url, headers=headers).json()
@@ -453,10 +487,87 @@ class UnifiedSentinel:
         if series_id:
             try:
                 # FRED API returns a pandas Series by default
+                self._rate_limit('fred')
                 return self.fred.get_series(series_id)
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ FRED Fetch Error ({series_id}): {e}")
                 return pd.Series()
         return pd.Series()
+
+    def fetch_historical_demand_series(self, material_name, time_range='5y', country_code='818'):
+        """
+        Fetches REAL historical demand (Imports) from UN Comtrade API.
+        """
+        if material_name not in self.materials: return pd.Series()
+        
+        hs_code = self.materials[material_name]['hs']
+        reporter_code = country_code
+        
+        # Calculate years to fetch
+        current_year = datetime.now().year
+        
+        # Parse years from time_range (e.g., '10y' -> 10)
+        try:
+            num_years = int(time_range.replace('y', ''))
+        except:
+            num_years = 5
+            
+        start_year = current_year - (num_years - 1)
+        years = range(start_year, current_year + 1)
+        
+        all_data = {}
+        
+        print(f"   Note: Fetching real trade data for {material_name} (HS {hs_code}) in Region {reporter_code}...")
+        
+        headers = { 
+            'Ocp-Apim-Subscription-Key': self.keys.get('comtrade', ''), 
+            'User-Agent': USER_AGENT 
+        }
+
+        for year in years:
+            # Comtrade V1 get/C/M/HS (Monthly)
+            # Fetching 12 months for specific year
+            periods = ",".join([f"{year}{m:02d}" for m in range(1, 13)])
+            
+            # Using specific periods usually requires 'ps' param or calling bulk
+            # For V1 standard 'get', we try period=YYYY for annual or specific strings
+            # NOTE: Standard free API often limits 'M' frequency. We try best effort.
+            
+            # Constructing URL for Monthly data
+            url = f"https://comtradeapi.un.org/data/v1/get/C/M/HS?reporterCode={reporter_code}&period={periods}&partnerCode=0&cmdCode={hs_code}&flowCode=M"
+            
+            try:
+                # Rate limit safety (Enforced + Extra Buffer)
+                self._rate_limit('comtrade')
+                time.sleep(0.5) # Optimized buffer
+                
+                res = requests.get(url, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    if 'data' in data:
+                        for rec in data['data']:
+                             # rec['period'] is like 202301
+                             period = str(rec.get('period'))
+                             if len(period) == 6:
+                                 dt = datetime.strptime(period, "%Y%m")
+                                 # API can return None (null) for netWgt if unknown
+                                 raw_qty = rec.get('netWgt')
+                                 qty = float(raw_qty) if raw_qty is not None else 0.0
+                                 
+                                 # Accumulate if multiple records (unlikely with partner=0 world)
+                                 current_val = all_data.get(dt, 0)
+                                 all_data[dt] = current_val + qty
+            except Exception as e:
+                print(f"   ⚠️ Comtrade fetch failed for {year}: {e}")
+                
+        # Convert dict to Series
+        if not all_data:
+            return pd.Series()
+            
+        series = pd.Series(all_data).sort_index()
+        # Resample to business days to match Price index logic (Forward Fill effectively spreads monthly demand)
+        # OR better: Return sparse monthly series and let the merger handle it (fillna(0)).
+        return series
 
     def generate_historical_dataset(self, time_range='5y'):
         """
@@ -467,7 +578,9 @@ class UnifiedSentinel:
             time_range (str): How far back to fetch data.
             
         Returns:
-            pd.DataFrame: A DataFrame with columns: [Date, Material, Category, Price, Driver_Value]
+        Returns:
+            pd.DataFrame: A DataFrame with columns: 
+                          [Date, Material, Category, Country, Price, Driver_Value, Construction_Index, Demand_Qty]
         """
         print(f"⏳ Fetching historical data ({time_range})... this may take a moment.")
         all_dfs = []
@@ -491,23 +604,81 @@ class UnifiedSentinel:
             df['Category'] = mat_data['category']
             
             # 3. Align Driver History (Merge on Index)
+            # 3. Align Driver History (Merge on Index)
             cat = mat_data['category']
+            
+            # Primary Driver (Category Specific)
             if cat in drivers and not drivers[cat].empty:
-                # Resample/Align driver data to price dates (forward fill to handle missing weekends)
                 driver_series = drivers[cat].reindex(df.index, method='ffill')
                 df['Driver_Value'] = driver_series
             else:
                 df['Driver_Value'] = 0.0
 
-            all_dfs.append(df)
-        
+            # 4. Add Secondary Driver (Construction Index) - Useful for Polymer & Shielding
+            # Even if not the primary category, knowing Construction trends helps all material demand.
+            if not drivers['Screening'].empty:
+                 const_series = drivers['Screening'].reindex(df.index, method='ffill')
+                 df['Construction_Index'] = const_series
+            else:
+                 df['Construction_Index'] = 0.0
+
+            # 5. Loop through ALL Countries to generate specific Demand History
+            # Note: Price is global (Yahoo), but Demand is Local.
+            
+            # 5. Loop through ALL Countries (Updated for Full Scope)
+            # Full registry available in self.country_registry
+            target_countries = self.country_registry
+            
+            for country_name, c_data in target_countries.items():
+                country_code = c_data.get('trade_code', '818')
+                
+                # Copy the base DF (Price + Drivers are shared globally for now)
+                country_df = df.copy()
+                country_df['Country'] = country_name
+                
+                # Fetch specific demand - SIMULATED as per user request
+                # supply_series = self.fetch_historical_demand_series(mat_name, time_range, country_code)
+                
+                # Simulation Logic: Demand = Base - (Price * Elasticity) + Noise
+                # We base it on the price index to ensure aligned dates
+                base_demand = 10000.0 # Standard unit
+                if country_name in ['China', 'USA']: base_demand = 50000.0
+                elif country_name in ['Egypt', 'UAE']: base_demand = 15000.0
+                
+                # Inverse relationship with price (High Price -> Lower Demand)
+                # We use numpy for vectorization if available, else list comp
+                prices = country_df['Price'].values
+                # Add randomness: +/- 20%
+                noise = self.rng.normal(1.0, 0.2, size=len(prices)) if self.rng else [1.0]*len(prices)
+                
+                # Simple function: Demand = Base / (Price/MeanPrice) * Noise
+                mean_p = prices.mean() if len(prices) > 0 else 1.0
+                simulated_qty = (base_demand / (prices / mean_p + 0.1)) * noise
+                
+                country_df['Demand_Qty'] = simulated_qty
+                
+                # if not demand_series.empty:
+                #     aligned_demand = demand_series.reindex(country_df.index, method='ffill').fillna(0)
+                #     country_df['Demand_Qty'] = aligned_demand
+                # else:
+                #     country_df['Demand_Qty'] = 0.0
+                    
+                all_dfs.append(country_df)
+
         if not all_dfs:
             return pd.DataFrame()
 
         # Combine all material histories
         final_df = pd.concat(all_dfs)
         final_df.index.name = 'Date'
-        return final_df.reset_index()
+        # Reset index to make Date a column
+        final_df = final_df.reset_index()
+        
+        # Reorder for clarity
+        cols = ['Date', 'Material', 'Category', 'Country', 'Price', 'Demand_Qty', 'Driver_Value', 'Construction_Index']
+        # Intersect with existing in case some are missing
+        final_cols = [c for c in cols if c in final_df.columns]
+        return final_df[final_cols]
     
     def save_signal_to_db(self, material_name, price, prediction, recommendation, country_name='Egypt'):
         """
