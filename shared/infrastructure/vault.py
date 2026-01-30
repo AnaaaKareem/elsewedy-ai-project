@@ -11,8 +11,9 @@ class VaultClient:
     A client wrapper for HashiCorp Vault interactions using the hvac library.
     
     This class handles authentication and connection to a Vault server, providing
-    methods to retrieve secrets safely. It includes fallbacks to environment variables
-    if Vault is unreachable or if a secret is missing from Vault.
+    methods to retrieve secrets safely. It supports dual authentication modes:
+    1.  **AppRole** (Production): Uses secure RoleID/SecretID injection.
+    2.  **Token** (Development): Uses a root or developer token.
     
     Attributes:
         vault_addr (str): The URL of the Vault server (env: VAULT_ADDR).
@@ -39,24 +40,39 @@ class VaultClient:
         """
         Establish connection to the Vault server.
         
-        Initializes the hvac Client and verifies authentication.
-        Logs the connection status. If connection fails, self.client is set to None.
+        Prioritizes AppRole authentication if RoleID/SecretID are present.
+        Falls back to Token authentication (Dev Mode).
         """
         try:
-            # Initialize the hvac client with address and token
-            self.client = hvac.Client(
-                url=self.vault_addr,
-                token=self.vault_token
-            )
+            self.client = hvac.Client(url=self.vault_addr)
             
-            # Check if the token is valid and we are authenticated
+            # 1. Check for AppRole Credentials
+            role_id = os.getenv('VAULT_ROLE_ID')
+            secret_id = os.getenv('VAULT_SECRET_ID')
+            
+            if role_id and secret_id:
+                try:
+                    if self.client.auth.approle.login(
+                        role_id=role_id,
+                        secret_id=secret_id
+                    ):
+                        logger.info("✅ Authenticated via AppRole.")
+                except Exception as auth_err:
+                    logger.error(f"❌ AppRole Login Failed: {auth_err}")
+                    self.client = None
+                    return
+            else:
+                # 2. Fallback to Token (Dev Mode)
+                self.client.token = self.vault_token
+            
+            # 3. Verify
             if self.client.is_authenticated():
                 logger.info(f"✅ Connected to Vault at {self.vault_addr}")
             else:
-                logger.warning(f"⚠️ Failed to authenticate with Vault at {self.vault_addr}")
+                logger.warning("⚠️ Failed to authenticate with Vault. Check Token or AppRole creds.")
                 self.client = None
+
         except Exception as e:
-            # Handle connection errors (e.g., Vault down, network issue)
             logger.error(f"❌ Could not connect to Vault: {e}")
             self.client = None
 
@@ -109,10 +125,13 @@ class VaultClient:
 
     def get_secret(self, key, mount_point='secret', path='sentinel'):
         """
-        Retrieve a specific secret value by key.
+        Retrieve a specific secret value by key with Fallback logic.
         
-        First attempts to fetch from Vault. If the key is not found in Vault
-        (or Vault is unavailable), falls back to checking environment variables.
+        Logic:
+        1. Attempt to read from Vault at the specified path.
+        2. If key exists, return it.
+        3. If key missing or Vault error, attempt to read from Environment Variables.
+        4. If both fail, log warning and return None.
         
         Args:
             key (str): The key of the secret to retrieve.

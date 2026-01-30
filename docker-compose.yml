@@ -1,3 +1,12 @@
+# ==============================================================================
+# Sentinel Platform - Docker Compose Composition
+# ==============================================================================
+# Orchestrates the entire Sentinel stack including:
+# 1. Infrastructure: RabbitMQ (Broker), Redis (Cache), PostgreSQL (DB), Vault (Secrets).
+# 2. Microservices: Market Ingestion, AI Engine, Dashboard.
+# 3. Initialization: 'vault_init' ephemeral container for secret bootstrap.
+# ==============================================================================
+
 services:
   # --- INFRASTRUCTURE TOOLS ---
 
@@ -20,7 +29,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:6-alpine
+    image: redis:alpine
     container_name: sentinel_redis
     hostname: redis
     command: redis-server --appendonly yes
@@ -43,8 +52,7 @@ services:
       - "5432:5432"
     volumes:
       - sentinel_db_data:/var/lib/postgresql/data
-      # Mount init script from new shared location
-      - ./shared/infrastructure/init.sql:/docker-entrypoint-initdb.d/init.sql:z
+
     networks:
       - sentinel_net
     healthcheck:
@@ -57,14 +65,15 @@ services:
     image: hashicorp/vault:latest
     container_name: sentinel_vault
     hostname: vault
+    restart: unless-stopped
     ports:
       - "8200:8200"
-    environment:
-      # Dev mode for immediate usage (no unseal required)
-      VAULT_DEV_ROOT_TOKEN_ID: root_token
-      VAULT_ADDR: 'http://0.0.0.0:8200'
     cap_add:
       - IPC_LOCK
+    volumes:
+      - ./services/vault/config/vault.hcl:/vault/config/vault.hcl
+      - sentinel_vault_data:/vault/file
+    command: [ "vault", "server", "-config=/vault/config/vault.hcl" ]
     networks:
       - sentinel_net
 
@@ -74,11 +83,11 @@ services:
     restart: "no"
     volumes:
       - ./services/vault_init.sh:/vault_init.sh
-    entrypoint: ["/bin/sh", "/vault_init.sh"]
+      - sentinel_vault_data:/vault/file
+    entrypoint: [ "/bin/sh", "/vault_init.sh" ]
     environment:
       VAULT_ADDR: 'http://vault:8200'
-      VAULT_TOKEN: root_token
-      # Pass secrets from host .env
+      # Pass secrets from host .env for injection
       FRED_API_KEY: ${FRED_API_KEY}
       EIA_API_KEY: ${EIA_API_KEY}
       COMTRADE_API_KEY: ${COMTRADE_API_KEY}
@@ -90,24 +99,48 @@ services:
     networks:
       - sentinel_net
 
+  db_init:
+    build:
+      context: .
+      dockerfile: services/market_ingestion/Dockerfile
+    container_name: sentinel_db_init
+    restart: "no"
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=postgres
+      - DB_PASSWORD=passme123
+      - DB_NAME=sentinel_db
+    command: [ "python", "-m", "shared.infrastructure.init_db" ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sentinel_net
+
   # --- MICROSERVICES ---
 
   market_ingestion:
-    build: 
+    build:
       context: .
       dockerfile: services/market_ingestion/Dockerfile
     container_name: sentinel_ingestion
-    restart: on-failure
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
     environment:
       - RABBITMQ_HOST=rabbitmq
-      - RABBITMQ_USER=admin
-      - RABBITMQ_PASS=passme123
       - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=root_token
       - DB_HOST=postgres
-      - DB_PASSWORD=passme123
-      # Adjust python path if needed (handled in Dockerfile, but good to be explicit for dev binding)
-      - PYTHONPATH=/app/shared
+      # Mounted via volume from vault_init
+      - VAULT_ROLE_ID_FILE=/vault/secrets/keys/role_id
+      - VAULT_SECRET_ID_FILE=/vault/secrets/keys/secret_id
+    volumes:
+      - sentinel_vault_data:/vault/secrets:ro
+      - ./scripts/wait-for-vault.sh:/app/wait-for-vault.sh
+    command: [ "/bin/sh", "/app/wait-for-vault.sh", "python", "-u", "main.py" ]
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -121,17 +154,24 @@ services:
       context: .
       dockerfile: services/ai_engine/Dockerfile
     container_name: sentinel_ai_engine
-    restart: on-failure
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
     environment:
       - RABBITMQ_HOST=rabbitmq
-      - RABBITMQ_USER=admin
-      - RABBITMQ_PASS=passme123
       - REDIS_HOST=redis
       - DB_HOST=postgres
-      - DB_PASSWORD=passme123
       - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=root_token
-      - PYTHONPATH=/app/shared
+      - VAULT_ROLE_ID_FILE=/vault/secrets/keys/role_id
+      - VAULT_SECRET_ID_FILE=/vault/secrets/keys/secret_id
+    volumes:
+      - sentinel_vault_data:/vault/secrets:ro
+      - sentinel_ai_weights:/app/service/src/ai_models/weights
+      - ./scripts/wait-for-vault.sh:/app/wait-for-vault.sh
+    command: [ "/bin/sh", "/app/wait-for-vault.sh", "python", "-u", "main.py" ]
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -141,22 +181,20 @@ services:
         condition: service_healthy
     networks:
       - sentinel_net
-    volumes:
-      - sentinel_ai_weights:/app/service/src/ai_models/weights
 
   dashboard:
-    build: 
+    build:
       context: ./services/dashboard
       dockerfile: Dockerfile
     container_name: sentinel_dashboard
     restart: always
     ports:
-      - "3000:3000"
+      - "3030:3000"
     environment:
       - REDIS_URL=redis://redis:6379
       - DB_HOST=postgres
       - DB_USER=postgres
-      - DB_PASSWORD=passme123
+      - DB_PASSWORD=passme123 # Dashboard might need vault too, but out of scope for now
       - DB_NAME=sentinel_db
     depends_on:
       redis:
@@ -166,11 +204,12 @@ services:
     networks:
       - sentinel_net
 
-  # --- NETWORKING & STORAGE ---
+# --- NETWORKING & STORAGE ---
 volumes:
   sentinel_db_data:
   sentinel_redis_data:
   sentinel_ai_weights:
+  sentinel_vault_data:
 
 
 networks:

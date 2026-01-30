@@ -15,20 +15,29 @@ from data_sources.unified_sentinel import UnifiedSentinel
 """
 Data Exporter Service.
 
-This module provides a utility to manually trigger the data collection pipeline
-outside of the automated schedule. It fetches historical data, saves it to a CSV
-file for training/backup, and syncs it to the production database.
+This utility module manages the ad-hoc extraction and archival of Sentinel data.
+It allows for:
+1.  **Historical Data Fetch**: Retrieving long-term history (e.g., 5-10 years) for all tracked materials.
+2.  **Dataset Creation**: formatting the data into a standardized CSV structure suitable for offline model training.
+3.  **Database Synchronization**: Pushing the fetched historical data to the primary SQL database to ensure the 'Cold Store' is up-to-date.
+
+Usage:
+    Run as a standalone script: `python data_exporter.py`
 """
 
 def export_data():
     """
-    Main execution function for data export.
+    Executes the data export workflow.
 
-    Steps:
-    1. Checks for API keys.
-    2. Initializes Sentinel to fetch 5 years of historical data.
-    3. Saves data to 'sentinel_training_data.csv'.
-    4. Syncs data to the database (optional).
+    Workflow:
+    1.  **Validation**: Checks for the existence of required API keys in the configuration.
+    2.  **Initialization**: Instantiates the `UnifiedSentinel` engine.
+    3.  **Acquisition**: Fetches a 10-year historical dataset for all materials defined in Sentinel.
+    4.  **Export**: Saves the resulting DataFrame to a local CSV file (`sentinel_training_data.csv`).
+    5.  **Persistence**: Attempts to write the dataset to the configured PostgreSQL database.
+
+    Returns:
+        None
     """
     # Check for keys availability to avoid runtime errors
     if not any(config.KEYS.values()):

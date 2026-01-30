@@ -1,5 +1,5 @@
 import os
-from infrastructure.vault import VaultClient
+from shared.infrastructure.vault import VaultClient
 
 """
 Configuration module for the Sentinel application.
@@ -11,12 +11,13 @@ secure secret management and supports environment variable overrides.
 
 class Config:
     """
-    Centralized configuration for Sentinel services.
+    Centralized configuration manager for Sentinel services.
     
     This singleton class loads and exposes configuration parameters required by
-    various components of the application. It prioritizes security by fetching
-    sensitive keys from Vault, while allowing flexibility for infrastructure
-    hosts via environment variables.
+    various components of the application. It employs a "Secure by Design" approach:
+    1.  **Vault First**: Prioritizes fetching credentials from HashiCorp Vault.
+    2.  **Env Fallback**: Falls back to environment variables for dev/container contexts.
+    3.  **Defaults**: Provides safe defaults for local development.
 
     Attributes:
         vault (VaultClient): Instance of the Vault client for secret retrieval.

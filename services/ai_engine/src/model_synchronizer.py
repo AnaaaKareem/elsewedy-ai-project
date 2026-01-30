@@ -27,40 +27,70 @@ class ModelSynchronizer:
         return {}
 
     def _save_state(self):
-        """Persists the sync state."""
+        """Persists the current synchronization timestamps to a local JSON file."""
         with open(STATE_FILE, 'w') as f:
             json.dump(self.state, f)
 
     def sync_models(self):
         """
-        Main entry point: Checks for gaps and backfills training.
+        Main entry point: Verifies and Restores Model State.
+        
+        Orchestrates the backfilling process for all material categories. It identifies
+        if any model hasn't been updated recently (e.g., due to service downtime) and
+        triggers training on the missing data window.
         """
         print("🔄 [Synchronizer] Verifying model currency...")
         
-        # We process by Category to avoid redundant driver fetches
-        categories = ['Polymer', 'Shielding'] # Screening (Croston) is usually batch-only, skipping for now
+        # Process Categories
+        categories = ['Polymer', 'Shielding']  
         
         for cat in categories:
             self._sync_category(cat)
             
         print("✅ [Synchronizer] All models up to date.")
 
+    def _get_base_filename(self, category):
+        """
+        Maps a material category to its canonical model weight filename.
+
+        Args:
+            category (str): Material category.
+            
+        Returns:
+            str: The base filename (without extension) for the model weights.
+        """
+        mapping = {
+            'Shielding': 'shielding_lstm',
+            'Polymer': 'polymer_xgb',
+            'Screening': 'screening_lumpy'
+        }
+        return mapping.get(category, f"{category}_latest")
+
     def _sync_category(self, category):
+        """
+        Performs the Gap Analysis and Catch-Up training for a single category.
+        
+        1. Checks last known sync time from state file or model metadata.
+        2. Detects time gap between last sync and Now.
+        3. If gap > 1 day, fetches historical data for that interval.
+        4. Retrains the model (Online Learning) on the new data points.
+        5. Updates the sync state.
+        
+        Args:
+            category (str): The material category to synchronize.
+        """
         last_sync_str = self.state.get(category)
         
-        # Default: If no history, assume we are up to date OR start from 30 days ago?
-        # For safety, if it's the first run, we usually rely on the pre-trained weights.
-        # We only catch up if we HAVE a record and it's old.
+        # Logic to recover state from loaded model metadata if JSON state is missing
         if not last_sync_str:
-            # 1. Attempt to recover from Model Metadata (Sidecar)
-            # This handles the "Offline Training -> Production" Handover case
+            base_name = self._get_base_filename(category)
             temp_model = ModelFactory.get_model(category)
             try:
-                # Try loading standard name
-                temp_model.load_weights(f"{category}_latest")
+                # Try loading standard name from Batch Training (e.g., shielding_lstm)
+                temp_model.load_weights(base_name)
                 if hasattr(temp_model, 'metadata') and 'last_updated' in temp_model.metadata:
                     last_sync_str = temp_model.metadata['last_updated']
-                    print(f"   ℹ️ Recovered sync state from Model Metadata: {last_sync_str}")
+                    print(f"   ℹ️ Recovered sync state for {category}: {last_sync_str}")
             except Exception:
                 pass
         
@@ -80,18 +110,14 @@ class ModelSynchronizer:
 
         print(f"   ⏳ Catching up {category}... Gap: {gap.days} days")
         
-        # 1. Fetch Missing Data (Daily resolution)
-        # We need a representative material for the category to get price history
-        # Polymer -> PVC, Shielding -> Copper
+        missing_data = pd.Series()
+        
+        # Fetch Price History (Copper/PVC)
         rep_mat = 'PVC' if category == 'Polymer' else 'Copper'
         symbol = self.sentinel.materials[rep_mat]['symbol']
-        
-        # Fetch prices since last sync
-        # Yahoo range calculation is approximate, let's grab enough coverage
-        prices = self.sentinel.fetch_historical_price_series(symbol, time_range='1mo') 
-        
-        # Filter for dates > last_sync_date
-        missing_data = prices[prices.index > last_sync_date]
+        full_series = self.sentinel.fetch_historical_price_series(symbol, time_range='3mo')
+        if not full_series.empty:
+             missing_data = full_series[full_series.index > last_sync_date]
         
         if missing_data.empty:
             print(f"   ⚠️ No new data found for {category} despite time gap.")
@@ -101,48 +127,42 @@ class ModelSynchronizer:
 
         # 2. Load Model
         model = ModelFactory.get_model(category)
-        try:
-            model.load_weights(f"{category}_latest")
-        except:
-             print(f"   ⚠️ No weights found for {category}, skipping backfill.")
-             return
+        if hasattr(model, 'model') and model.model is None: # Factory might mock but let's check
+             pass
 
         # 3. Backfill Loop
         print(f"   📈 Training on {len(missing_data)} missing data points...")
         
         if category == 'Polymer':
-            # Fetch Drivers once (Optimization)
-            oil_series = self.sentinel.fetch_historical_driver_series('Polymer')
-            const_series = self.sentinel.fetch_historical_driver_series('Screening')
-            
-            # Align
-            df = missing_data.to_frame(name='Price')
-            df['Oil'] = oil_series.reindex(df.index, method='ffill').fillna(80.0)
-            df['Const'] = const_series.reindex(df.index, method='ffill').fillna(100.0)
-            
-            for date, row in df.iterrows():
-                # Construct X: [Price, Oil, Const]
-                X_new = [[row['Price'], row['Oil'], row['Const']]]
-                # Construct y: Future Price (Approximate: Use next day as proxy for trend flow or self-reinforce)
-                # Ideally we need T+30, but online updates usually reinforce 'current structure'.
-                # For this feature, we simulate the target as the Price itself (Auto-Encoder style) or Next Price
+            # Simplified to Univariate (Price Only)
+            for date, row in missing_data.to_frame(name='Price').iterrows():
+                # Feature: Price (Using current price to refine model context)
+                # Note: In real autoregressive, X should be lag. 
+                # For online catchup, we are feeding (Current) -> (Next) implied, 
+                # or just updating distribution.
+                X_new = [[row['Price']]]
                 y_new = [row['Price']] 
-                
                 model.train_online(X_new, y_new)
                 
         elif category == 'Shielding':
             # LSTM needs sequence logic. 
             # We treat 'missing_data' as the stream of 'next_prices'.
             # We need the price *before* the first missing point to start.
-            prev_price = prices[prices.index <= last_sync_date].iloc[-1] if not prices.empty else missing_data.iloc[0]
+            # Assuming full_series exists from above logic
+            prev_price = missing_data.iloc[0] # Simplification if prev not avail
             
             for date, price in missing_data.items():
-                # train_online(start_price, next_price)
                 model.train_online(prev_price, price)
                 prev_price = price
 
+
+
         # 4. Update State
-        model.save_weights(f"{category}_latest")
+        # Save to base name (e.g. shielding_lstm) to keep single source of truth? 
+        # Or save to _latest? Let's save to base name to be consistent with pipeline.
+        base_name = self._get_base_filename(category)
+        model.save_weights(base_name)
+        
         self.state[category] = missing_data.index[-1].isoformat()
         self._save_state()
         print(f"   ✅ {category} synced to {self.state[category]}")

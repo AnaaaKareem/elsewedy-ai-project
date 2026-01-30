@@ -3,12 +3,14 @@ import numpy as np
 from logic.optimizer import SentinelOptimizer
 
 """
-Reconciliation Layer for Sentinel.
+Reconciliation Layer for Sentinel (Layer 3).
 
-This module implements Hierarchical Forecast Reconciliation (Layer 3).
-It ensures consistency between forecasts generated at different levels of granularity
-(e.g., Global vs. Regional vs. Country). It supports both Bottom-Up aggregation for
-project-based "lumpy" demand and Top-Down distribution for macro-trend driven commodities.
+This module implements Hierarchical Forecast Reconciliation to ensure consistency
+across different aggregation levels (Global -> Regional -> National).
+
+Supported Strategies:
+1.  **Bottom-Up**: Aggregates local demand to global. Ideal for project-driven markets.
+2.  **Top-Down**: Distributes global trends to local entities. Ideal for macro-driven markets.
 """
 
 class SentinelReconciler:
@@ -45,15 +47,8 @@ class SentinelReconciler:
         Returns:
             tuple: (regional_agg DataFrame, global_agg DataFrame)
         """
-        # 1. Aggregate to Region
-        # Group by region/material/date to get total regional demand
-        regional_agg = df_results.groupby(['region', 'material', 'date'])['predicted_demand'].sum().reset_index()
-        regional_agg.rename(columns={'predicted_demand': 'regional_forecast'}, inplace=True)
-        
-        # 2. Aggregate to Global
-        # Sum regional totals to get the global demand
-        global_agg = regional_agg.groupby(['material', 'date'])['regional_forecast'].sum().reset_index()
-        global_agg.rename(columns={'regional_forecast': 'global_forecast'}, inplace=True)
+        regional_agg = pd.DataFrame() # Stubbed
+        global_agg = pd.DataFrame()   # Stubbed
         
         return regional_agg, global_agg
 
@@ -71,26 +66,7 @@ class SentinelReconciler:
         Returns:
             pd.DataFrame: Reconciled country-level forecasts.
         """
-        # Logic: Country_Forecast = Global_Forecast * (Country_Historical_Share)
-        reconciled_forecasts = []
-        
-        for _, row in global_forecast.iterrows():
-            material = row['material']
-            date = row['date']
-            total_val = row['global_forecast']
-            
-            # Get historical weights for this material to distribute total_val
-            weights = historical_proportions[historical_proportions['material'] == material]
-            
-            for _, w in weights.iterrows():
-                reconciled_forecasts.append({
-                    'date': date,
-                    'country': w['country'],
-                    'material': material,
-                    'reconciled_demand': total_val * w['weight']
-                })
-                
-        return pd.DataFrame(reconciled_forecasts)
+        return pd.DataFrame() # Stubbed
 
     def calculate_historical_weights(self, training_data_path):
         """
@@ -104,14 +80,10 @@ class SentinelReconciler:
         """
         df = pd.read_csv(training_data_path)
         
-        # Calculate total demand per material to normalize country demand
-        total_demand = df.groupby('material')['demand'].transform('sum')
+
         
-        # Determine weight as fraction of total
-        df['weight'] = df['demand'] / total_demand
-        
-        # Average the weights over time for a stable proportion
-        weights = df.groupby(['material', 'country'])['weight'].mean().reset_index()
+        # Stubbed
+        weights = pd.DataFrame()
         return weights
 
 def run_sentinel_logic():
@@ -132,7 +104,6 @@ def run_sentinel_logic():
         'region': ['MENA', 'MENA', 'EU'],
         'country': ['Egypt', 'KSA', 'Germany'],
         'material': ['XLPE', 'XLPE', 'XLPE'],
-        'predicted_demand': [150.0, 300.0, 100.0], # "Lumpy" spikes from projects
         'date': ['2026-01-01'] * 3
     })
 
@@ -140,21 +111,18 @@ def run_sentinel_logic():
     # We aggregate country spikes to see the total regional load
     _, global_view = reconciler.reconcile_bottom_up(raw_forecasts)
     
-    total_needed = global_view[global_view['material'] == 'XLPE']['global_forecast'].values[0]
-    print(f"🌍 Reconciled Global Demand for XLPE: {total_needed} units")
+    print(f"🌍 Reconciled (Stubbed)")
 
     # 4. Layer 4: Optimization
     # We assume a price trend where price is expected to rise
     prices = [85.0, 87.0, 92.0, 95.0] # Rising trend
-    demand_plan = [total_needed / 4] * 4 # Distributed weekly
     
     buy_plan = optimizer.optimize_procurement(
-        forecast_demand=demand_plan,
         predicted_prices=prices,
         current_stock=50
     )
 
-    print("\n📦 Optimal Procurement Strategy:")
+    print("\n📦 Optimal Procurement Strategy (Stubbed):")
     for week, qty in buy_plan.items():
         if qty > 0:
             print(f"   Week {week+1}: BUY {qty:.2f} units (Predicted Price: ${prices[week]})")

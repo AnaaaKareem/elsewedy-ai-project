@@ -1,3 +1,11 @@
+"""
+Unified Sentinel Engine.
+
+This module acts as the central data gateway for the entire Sentinel platform.
+It abstracts the complexity of connecting to multiple disparate data sources
+(Financial APIs, Trade Databases, Economic Indices) and provides a normalized
+interface for upstream services.
+"""
 import requests
 import ssl
 
@@ -24,18 +32,14 @@ try:
 except ImportError:
     np = None
 
-try:
-    import psycopg2
-    from psycopg2 import pool
-    from psycopg2.extras import execute_values
-except ImportError:
-    psycopg2 = None
-    pool = None
-    execute_values = None
-
 import math
 import time
 from datetime import datetime
+
+# SQLAlchemy imports
+from shared.infrastructure.database import SessionLocal
+from shared.infrastructure.models import Material, Country, AISignal
+from sqlalchemy.exc import SQLAlchemyError
 
 USER_AGENT = 'Mozilla/5.0'
 
@@ -48,13 +52,12 @@ class UnifiedSentinel:
     1. Data Ingestion: Fetching market data (Yahoo Finance), economic indicators (FRED), 
        and trade statistics (UN Comtrade).
     2. Data Normalization: standardizing inputs across different regions and units.
-    3. Signal Processing: Generating market signals and demand forecasts (Layer 2 of Architecture).
+    3. Signal Processing: Generating market signals (Layer 2 of Architecture).
     4. Persistence: Handling both hot (Redis/Memory) and cold (PostgreSQL/SQLite) storage.
 
     Attributes:
         keys (dict): API keys configuration.
-        db_config (dict): Database connection parameters.
-        db_pool (psycopg2.pool.SimpleConnectionPool): Connection pool for PostgreSQL.
+        db_config (dict): Database connection parameters (Legacy, now handled by database.py).
         fred (Fred): Client for Federal Reserve Economic Data.
         materials (dict): Master registry of tracked materials and their metadata.
         regions (dict): Master registry of tracked regions and associated countries.
@@ -66,28 +69,14 @@ class UnifiedSentinel:
 
         Args:
             api_keys (dict): Dictionary containing API keys ('fred', 'comtrade', etc.).
-            db_config (dict): Dictionary containing DB host, user, password, etc.
+            db_config (dict): Dictionary containing DB host, user, password, etc. (Legacy)
         """
         self.keys = api_keys
-        self.db_config = db_config
+        self.db_config = db_config 
         
-        # Initialize Database Connection Pool if config is provided
-        # Initialize Database Connection Pool if config is provided
-        if db_config and psycopg2:
-            try:
-                self.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, **db_config)
-
-            except Exception as e:
-                print(f"⚠️ DB Connection Failed: {e}")
-                self.db_pool = None
-        else:
-            self.db_pool = None
-            
-        # Initialize Fred if key exists
         # Initialize Fred if key exists and library is available
         self.fred = Fred(api_key=api_keys.get('fred')) if (api_keys.get('fred') and Fred) else None
         
-        # Initialize Random Number Generator with a fixed seed for reproducibility
         # Initialize Random Number Generator with a fixed seed for reproducibility
         self.rng = np.random.default_rng(42) if np else None
 
@@ -105,12 +94,13 @@ class UnifiedSentinel:
             'Copper':        {'hs': '740811', 'symbol': 'HG=F',  'category': 'Shielding', 'driver': 'LME'},
             'Aluminum':      {'hs': '760511', 'symbol': 'ALI=F', 'category': 'Shielding', 'driver': 'LME'},
             'GSW':           {'hs': '721720', 'symbol': 'HRC=F', 'category': 'Shielding', 'driver': 'LME'},
+            'GST':           {'hs': '721230', 'symbol': 'HRC=F', 'category': 'Shielding', 'driver': 'LME'},
             'Copper Tape':   {'hs': '741011', 'symbol': 'HG=F',  'category': 'Shielding', 'driver': 'LME'},
             'Aluminum Tape': {'hs': '760720', 'symbol': 'ALI=F', 'category': 'Shielding', 'driver': 'LME'},
 
             # SCREENING (Specialty - Lead Time Risk)
-            'Mica Tape':     {'hs': '681490', 'symbol': 'FIXED', 'category': 'Screening', 'driver': 'LeadTime'},
-            'Water-blocking':{'hs': '560313', 'symbol': 'FIXED', 'category': 'Screening', 'driver': 'LeadTime'}
+            'Mica Tape':     {'hs': '681490', 'symbol': 'PICK', 'category': 'Screening', 'driver': 'LeadTime'},
+            'Water-blocking':{'hs': '560313', 'symbol': 'CL=F',  'category': 'Screening', 'driver': 'LeadTime'}
         }
 
         # REGIONS (SentinelAutomation version - detailed)
@@ -169,26 +159,28 @@ class UnifiedSentinel:
         # ID Cache (populated on startup)
         self.material_ids = {}
         self.country_ids = {}
-        if self.db_pool:
-            self._populate_id_cache()
+        
+        # Populate cache using SQLAlchemy
+        self._populate_id_cache()
 
     def _populate_id_cache(self):
         """Fetches ID mappings from Master Tables."""
-        conn = self.db_pool.getconn()
+        db = SessionLocal()
         try:
-            with conn.cursor() as cursor:
-                # Cache Materials
-                cursor.execute("SELECT name, id FROM materials")
-                self.material_ids = {row[0]: row[1] for row in cursor.fetchall()}
-                
-                # Cache Countries
-                cursor.execute("SELECT name, id FROM countries")
-                self.country_ids = {row[0]: row[1] for row in cursor.fetchall()}
-                print(f"✅ Loaded {len(self.material_ids)} materials and {len(self.country_ids)} countries into cache.")
+            # Cache Materials
+            materials_list = db.query(Material.name, Material.id).all()
+            self.material_ids = {name: id for name, id in materials_list}
+            
+            # Cache Countries
+            countries_list = db.query(Country.name, Country.id).all()
+            self.country_ids = {name: id for name, id in countries_list}
+            
+            print(f"✅ Loaded {len(self.material_ids)} materials and {len(self.country_ids)} countries into cache.")
         except Exception as e:
             print(f"⚠️ Failed to cache IDs: {e}")
+            # If DB is not ready, this will fail. That is expected.
         finally:
-            self.db_pool.putconn(conn)
+            db.close()
 
     def _rate_limit(self, service_name):
         """
@@ -206,8 +198,6 @@ class UnifiedSentinel:
 
     def get_country_id(self, name):
         return self.country_ids.get(name)
-
-
 
     # --- Methods from SentinelAutomation ---
 
@@ -246,88 +236,10 @@ class UnifiedSentinel:
             return 0.0, 0.0
 
     def fetch_demand(self, reporter_code, hs_code):
-        """
-        Fetches trade volume data from UN Comtrade API v1.
-        Includes exponential backoff for rate limiting.
-
-        Args:
-            reporter_code (str): UN Country Code for the reporter (e.g., '818' for Egypt).
-            hs_code (str): Harmonized System code for the material.
-
-        Returns:
-            str: Description of quantity and value, or error message.
-        """
-        # Authenticated Data API
-        # Documentation: https://unstats.un.org/wiki/display/comtrade/Comtrade+API+V1
-        url = f"https://comtradeapi.un.org/data/v1/get/C/A/HS?reporterCode={reporter_code}&period=2023&partnerCode=0&cmdCode={hs_code}&flowCode=M"
-        
-        self._rate_limit('comtrade')
-        
-        headers = { 
-            'Ocp-Apim-Subscription-Key': self.keys.get('comtrade', ''), 
-            'User-Agent': USER_AGENT 
-        }
-
-        # Retry logic for API reliability
-        for attempt in range(3):
-            try:
-                res = requests.get(url, headers=headers)
-
-                if res.status_code == 429:
-                    # Rate Limit Handling
-                    wait_time = (attempt + 1) * 5 
-                    time.sleep(wait_time)
-                    continue
-
-                if res.status_code != 200:
-                    return f"API Error {res.status_code}: {res.text[:100]}"
-
-                try:
-                    data = res.json()
-                except Exception:
-                    return f"JSON Error: {res.text[:50]}"
-
-                if 'data' in data and len(data['data']) > 0:
-                    rec = data['data'][0]
-                    qty = rec.get('netWgt', 0)
-                    val = rec.get('primaryValue', 0)
-                    return f"{qty} kg (${val})"
-                return "No Data (2023)"
-
-            except Exception as e:
-                return f"Error: {e}"
-        return "API Error 429 (Rate Limit Persisted)"
+        return "Demand Tracking Removed"
 
     def fetch_driver_data(self, category):
-        """
-        Fetches the primary economic driver for a material category from FRED.
-        
-        - Polymer -> Oil Prices (DCOILBRENTEU)
-        - Screening -> Construction Spending (TTLCONS)
-        
-        Args:
-            category (str): The material category.
-            
-        Returns:
-            str: Formatted string of the driver value.
-        """
-        if not self.fred:
-            return "FRED Key Missing"
-
-        if category == 'Polymer':
-            # Oil Price (Brent Crude)
-            try:
-                self._rate_limit('fred')
-                oil = self.fred.get_series('DCOILBRENTEU').iloc[-1]
-                return f"Oil ${oil:.2f}"
-            except Exception: return "Oil N/A"
-        elif category == 'Screening':
-            # Total Construction Spending Proxy
-            try:
-                self._rate_limit('fred')
-                cons = self.fred.get_series('TTLCONS').iloc[-1]
-                return f"Global Const. Index: {cons:.0f}"
-            except Exception: return "Const. Index N/A"
+        """Deprecated."""
         return "Market Driven"
 
     def run_comprehensive_audit(self):
@@ -350,8 +262,8 @@ class UnifiedSentinel:
                     cat = mat_data['category']
                     driver_info = self.fetch_driver_data(cat)
 
-                    # 2. Demand Check
-                    demand = self.fetch_demand(country_code, mat_data['hs'])
+                    # 2. Demand Check (Removed)
+                    demand = "N/A"
 
                     # 3. Visualization/Logging
                     trend_symbol = "➡️"
@@ -359,14 +271,14 @@ class UnifiedSentinel:
                         trend_symbol = "↗️"
                     elif trend < 0:
                         trend_symbol = "↘️"
-                    print(f"      [{mat_name}] Price: ${price:.2f} ({trend_symbol} {trend*100:.2f}%) | Demand: {demand} | Driver: {driver_info}")
+                    print(f"      [{mat_name}] Price: ${price:.2f} ({trend_symbol} {trend*100:.2f}%) | Driver: {driver_info}")
 
                     # 4. Aggregate Result
                     all_results.append({
                         'Region': region_name, 'Country': country_name,
                         'Material': mat_name, 'Category': cat,
                         'Price': price, 'Trend': f"{trend*100:.2f}%",
-                        'Demand': demand, 'Driver': driver_info
+                        'Driver': driver_info
                     })
                     # Throttle loop to avoid API bans
                     time.sleep(2.0) 
@@ -475,121 +387,26 @@ class UnifiedSentinel:
             return pd.Series()
 
     def fetch_historical_driver_series(self, category):
-        """Fetches full historical series for the driver from FRED."""
-        if not self.fred: return pd.Series()
-
-        series_id = None
-        if category == 'Polymer':
-            series_id = 'DCOILBRENTEU' # Oil
-        elif category == 'Screening':
-            series_id = 'TTLCONS' # Construction
-        
-        if series_id:
-            try:
-                # FRED API returns a pandas Series by default
-                self._rate_limit('fred')
-                return self.fred.get_series(series_id)
-            except Exception as e:
-                print(f"⚠️ FRED Fetch Error ({series_id}): {e}")
-                return pd.Series()
+        """Deprecated."""
         return pd.Series()
 
     def fetch_historical_demand_series(self, material_name, time_range='5y', country_code='818'):
-        """
-        Fetches REAL historical demand (Imports) from UN Comtrade API.
-        """
-        if material_name not in self.materials: return pd.Series()
-        
-        hs_code = self.materials[material_name]['hs']
-        reporter_code = country_code
-        
-        # Calculate years to fetch
-        current_year = datetime.now().year
-        
-        # Parse years from time_range (e.g., '10y' -> 10)
-        try:
-            num_years = int(time_range.replace('y', ''))
-        except:
-            num_years = 5
-            
-        start_year = current_year - (num_years - 1)
-        years = range(start_year, current_year + 1)
-        
-        all_data = {}
-        
-        print(f"   Note: Fetching real trade data for {material_name} (HS {hs_code}) in Region {reporter_code}...")
-        
-        headers = { 
-            'Ocp-Apim-Subscription-Key': self.keys.get('comtrade', ''), 
-            'User-Agent': USER_AGENT 
-        }
-
-        for year in years:
-            # Comtrade V1 get/C/M/HS (Monthly)
-            # Fetching 12 months for specific year
-            periods = ",".join([f"{year}{m:02d}" for m in range(1, 13)])
-            
-            # Using specific periods usually requires 'ps' param or calling bulk
-            # For V1 standard 'get', we try period=YYYY for annual or specific strings
-            # NOTE: Standard free API often limits 'M' frequency. We try best effort.
-            
-            # Constructing URL for Monthly data
-            url = f"https://comtradeapi.un.org/data/v1/get/C/M/HS?reporterCode={reporter_code}&period={periods}&partnerCode=0&cmdCode={hs_code}&flowCode=M"
-            
-            try:
-                # Rate limit safety (Enforced + Extra Buffer)
-                self._rate_limit('comtrade')
-                time.sleep(0.5) # Optimized buffer
-                
-                res = requests.get(url, headers=headers)
-                if res.status_code == 200:
-                    data = res.json()
-                    if 'data' in data:
-                        for rec in data['data']:
-                             # rec['period'] is like 202301
-                             period = str(rec.get('period'))
-                             if len(period) == 6:
-                                 dt = datetime.strptime(period, "%Y%m")
-                                 # API can return None (null) for netWgt if unknown
-                                 raw_qty = rec.get('netWgt')
-                                 qty = float(raw_qty) if raw_qty is not None else 0.0
-                                 
-                                 # Accumulate if multiple records (unlikely with partner=0 world)
-                                 current_val = all_data.get(dt, 0)
-                                 all_data[dt] = current_val + qty
-            except Exception as e:
-                print(f"   ⚠️ Comtrade fetch failed for {year}: {e}")
-                
-        # Convert dict to Series
-        if not all_data:
-            return pd.Series()
-            
-        series = pd.Series(all_data).sort_index()
-        # Resample to business days to match Price index logic (Forward Fill effectively spreads monthly demand)
-        # OR better: Return sparse monthly series and let the merger handle it (fillna(0)).
-        return series
+        return pd.Series()
 
     def generate_historical_dataset(self, time_range='5y'):
         """
-        Generates a consolidated training dataset from historical sources (Prices & Drivers).
+        Generates a consolidated training dataset from historical sources (Prices).
         This dataset is used to train the Sentinel AI models.
         
         Args:
             time_range (str): How far back to fetch data.
             
         Returns:
-        Returns:
             pd.DataFrame: A DataFrame with columns: 
-                          [Date, Material, Category, Country, Price, Driver_Value, Construction_Index, Demand_Qty]
+                          [Date, Material, Category, Country, Price]
         """
         print(f"⏳ Fetching historical data ({time_range})... this may take a moment.")
         all_dfs = []
-
-        # 1. Fetch Shared Drivers first to avoid repeated calls (Optimization)
-        drivers = {
-            'Polymer': self.fetch_historical_driver_series('Polymer'),
-            'Screening': self.fetch_historical_driver_series('Screening')
-        }
 
         for mat_name, mat_data in self.materials.items():
             print(f"   Processing History: {mat_name}...")
@@ -603,66 +420,14 @@ class UnifiedSentinel:
             df['Material'] = mat_name
             df['Category'] = mat_data['category']
             
-            # 3. Align Driver History (Merge on Index)
-            # 3. Align Driver History (Merge on Index)
-            cat = mat_data['category']
-            
-            # Primary Driver (Category Specific)
-            if cat in drivers and not drivers[cat].empty:
-                driver_series = drivers[cat].reindex(df.index, method='ffill')
-                df['Driver_Value'] = driver_series
-            else:
-                df['Driver_Value'] = 0.0
-
-            # 4. Add Secondary Driver (Construction Index) - Useful for Polymer & Shielding
-            # Even if not the primary category, knowing Construction trends helps all material demand.
-            if not drivers['Screening'].empty:
-                 const_series = drivers['Screening'].reindex(df.index, method='ffill')
-                 df['Construction_Index'] = const_series
-            else:
-                 df['Construction_Index'] = 0.0
-
-            # 5. Loop through ALL Countries to generate specific Demand History
-            # Note: Price is global (Yahoo), but Demand is Local.
-            
             # 5. Loop through ALL Countries (Updated for Full Scope)
-            # Full registry available in self.country_registry
             target_countries = self.country_registry
             
             for country_name, c_data in target_countries.items():
-                country_code = c_data.get('trade_code', '818')
-                
-                # Copy the base DF (Price + Drivers are shared globally for now)
+                # Copy the base DF (Price is shared globally for now)
                 country_df = df.copy()
                 country_df['Country'] = country_name
                 
-                # Fetch specific demand - SIMULATED as per user request
-                # supply_series = self.fetch_historical_demand_series(mat_name, time_range, country_code)
-                
-                # Simulation Logic: Demand = Base - (Price * Elasticity) + Noise
-                # We base it on the price index to ensure aligned dates
-                base_demand = 10000.0 # Standard unit
-                if country_name in ['China', 'USA']: base_demand = 50000.0
-                elif country_name in ['Egypt', 'UAE']: base_demand = 15000.0
-                
-                # Inverse relationship with price (High Price -> Lower Demand)
-                # We use numpy for vectorization if available, else list comp
-                prices = country_df['Price'].values
-                # Add randomness: +/- 20%
-                noise = self.rng.normal(1.0, 0.2, size=len(prices)) if self.rng else [1.0]*len(prices)
-                
-                # Simple function: Demand = Base / (Price/MeanPrice) * Noise
-                mean_p = prices.mean() if len(prices) > 0 else 1.0
-                simulated_qty = (base_demand / (prices / mean_p + 0.1)) * noise
-                
-                country_df['Demand_Qty'] = simulated_qty
-                
-                # if not demand_series.empty:
-                #     aligned_demand = demand_series.reindex(country_df.index, method='ffill').fillna(0)
-                #     country_df['Demand_Qty'] = aligned_demand
-                # else:
-                #     country_df['Demand_Qty'] = 0.0
-                    
                 all_dfs.append(country_df)
 
         if not all_dfs:
@@ -675,17 +440,15 @@ class UnifiedSentinel:
         final_df = final_df.reset_index()
         
         # Reorder for clarity
-        cols = ['Date', 'Material', 'Category', 'Country', 'Price', 'Demand_Qty', 'Driver_Value', 'Construction_Index']
+        cols = ['Date', 'Material', 'Category', 'Country', 'Price']
         # Intersect with existing in case some are missing
         final_cols = [c for c in cols if c in final_df.columns]
         return final_df[final_cols]
     
-    def save_signal_to_db(self, material_name, price, prediction, recommendation, country_name='Egypt'):
+    def save_signal_to_db(self, material_name, price, prediction, recommendation, country_name='Egypt', confidence=0.0, risk=0.0):
         """
-        Saves AI-generated signals to the 'signals' table using 3NF Foreign Keys.
+        Saves AI-generated signals to the 'signals' table using SQLAlchemy.
         """
-        if not self.db_config: return
-        
         # Resolve Foreign Keys
         mat_id = self.get_material_id(material_name)
         country_id = self.get_country_id(country_name)
@@ -694,24 +457,21 @@ class UnifiedSentinel:
             print(f"⚠️ Lookup Failed for Signal: Mat={material_name}, Country={country_name}")
             return
 
-        conn = self.db_pool.getconn()
+        db = SessionLocal()
         try:
-            with conn.cursor() as cursor:
-                query = """
-                    INSERT INTO ai_signals (created_at, material_id, country_id, input_price, predicted_demand, decision)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """
-                cursor.execute(query, (
-                    datetime.now(), 
-                    mat_id, 
-                    country_id,
-                    price, 
-                    prediction, 
-                    recommendation
-                ))
-                conn.commit()
+            signal = AISignal(
+                material_id=mat_id,
+                country_id=country_id,
+                input_price=price,
+                decision=recommendation,
+                confidence_score=confidence,
+                stockout_risk=risk
+            )
+            db.add(signal)
+            db.commit()
+            print(f"✅ Saved signal for {material_name} in {country_name}")
         except Exception as e:
             print(f"❌ Signal DB Error: {e}")
-            conn.rollback()
+            db.rollback()
         finally:
-            self.db_pool.putconn(conn)
+            db.close()

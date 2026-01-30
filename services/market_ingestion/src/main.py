@@ -13,11 +13,16 @@ from data_sources.unified_sentinel import UnifiedSentinel
 from infrastructure.config import config
 
 """
-RabbitMQ Producer Service.
+RabbitMQ Producer Service (Market Ingestion).
 
-This service acts as a 'Market Ticker', continuously fetching real-time market data
-for all tracked materials and publishing update events to the 'market_updates' queue.
-Downstream workers consume these events to trigger AI inference and optimization.
+This service acts as the 'Pulse' of the Sentinel platform. It continuously polls
+external data sources (via `UnifiedSentinel`) for real-time market data updates
+and publishes them to the RabbitMQ message broker.
+
+Key Responsibilities:
+- **Polling**: Fetches current prices and trends for all tracked materials.
+- **Publishing**: Sends durable messages to the `market_updates` exchange.
+- **Resilience**: Handles connection failures and re-queues logic (via pika).
 """
 
 # Setup RabbitMQ Connection

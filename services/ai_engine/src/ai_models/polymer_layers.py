@@ -1,6 +1,7 @@
 import pickle
 import os
 import json
+import numpy as np
 from datetime import datetime
 
 try:
@@ -14,32 +15,32 @@ except ImportError:
 """
 Polymer Layers Model (Pillar 1).
 
-This module implements Gradient Boosting Machine (GBM) wrappers for materials
-whose prices/demand are driven by external macro-factors (e.g., Oil Prices, 
-Construction Index). Best for XLPE, PVC.
+This module implements Gradient Boosting Machine (GBM) wrappers for materials driven
+by external market factors (e.g., Oil Price, Construction Index). It supports
+both XGBoost and LightGBM backends (defaulting to XGBoost).
 """
 
 class SentinelGBMModel:
     """
-    Wrapper for XGBoost/LightGBM regressors.
-    
+    Wrapper for Gradient Boosting Regressors (XGBoost/LightGBM).
+
+    Designed for "Polymer" category materials where price is strongly correlated
+    with external macroeconomic indicators.
+
     Attributes:
-        engine (str): Underlying library ('XGBoost' or 'LightGBM').
-        model (object): The actual regressor instance.
+        engine (str): The underlying library used ('XGBoost' or 'LightGBM').
+        model (object): The actual regressor object.
+        metadata (dict): storage for feature importance and update timestamps.
+        
+    Args:
+        engine (str): backend to use. Defaults to "XGBoost".
     """
     def __init__(self, engine="XGBoost"):
-        """
-        Initialize the GBM model.
-        Args:
-            engine (str): Type of GBM to use. Directions: 'XGBoost', 'LightGBM'.
-        """
         self.engine = engine
         if HAS_ML:
             if engine == "XGBoost":
-                # PRODUCTION UPDATE: Increased estimators to 1000
-                self.model = xgb.XGBRegressor(n_estimators=1000, max_depth=6, eta=0.05)
+                self.model = xgb.XGBRegressor(n_estimators=1000, max_depth=6, eta=0.05, n_jobs=-1)
             else:
-                # Fallback or alternative
                 self.model = lgb.LGBMRegressor()
         else:
             self.model = "MOCK_GBM_OBJECT"
@@ -47,39 +48,43 @@ class SentinelGBMModel:
 
     def train(self, X, y):
         """
-        Train the model.
-        
-        Args:
-            X (array-like): Feature matrix (e.g. [Price, Oil_Index, Construction_Index]).
-            y (array-like): Target vector (Demand).
+        Train the model on a full dataset.
         """
-        if HAS_ML:
+        if not HAS_ML:
+            return
+
+        # Sanity check
+        if len(X) == 0 or len(y) == 0:
+            print("⚠️ XGBoost Training skipped: No data provided.")
+            return
+
+        print(f"⚡ [Polymer] Training XGBoost on {len(X)} samples...")
+        try:
             self.model.fit(X, y)
-        else:
-            pass # Mock Train
+            print("   ✅ Training Complete.")
+            
+            # Optional: Store feature importance in metadata if possible
+            if hasattr(self.model, 'feature_importances_'):
+                self.metadata['feature_importance_top'] = float(np.max(self.model.feature_importances_))
+                
+        except Exception as e:
+            print(f"❌ XGBoost Training Failed: {e}")
 
     def save_weights(self, filename):
-        """Save model pickle."""
-    def save_weights(self, filename):
-        """Save model pickle."""
         d = os.path.join(os.path.dirname(__file__), "weights")
         os.makedirs(d, exist_ok=True)
+        
+        # Save Pickle
         with open(os.path.join(d, f"{filename}.pkl"), "wb") as f:
             pickle.dump(self.model, f)
         print(f"💾 Saved: {d}/{filename}.pkl")
         
         # Save Metadata Sidecar
         meta_path = os.path.join(d, f"{filename}_meta.json")
-        # Ensure we have a timestamp
-        if not self.metadata.get('last_updated'):
-             self.metadata['last_updated'] = datetime.now().isoformat()
-             
+        self.metadata['last_updated'] = datetime.now().isoformat()
         with open(meta_path, "w") as f:
             json.dump(self.metadata, f)
-        print(f"   + Metadata: {meta_path}")
 
-    def load_weights(self, filename):
-        """Load model pickle."""
     def load_weights(self, filename):
         """Load model pickle."""
         d = os.path.join(os.path.dirname(__file__), "weights")
@@ -101,16 +106,8 @@ class SentinelGBMModel:
     def train_online(self, X_new, y_new, save_interval=10, step_count=0):
         """
         Refines the model with new data. 
-        
-        Note: True online learning with Trees is hard. efficient implementations 
-        often reload the tree structure and update leaf weights, or just refit 
-        on a sliding window. Here we wrap the update API if available.
-
-        Args:
-            X_new, y_new: New data point(s).
         """
         # For sklearn API, we can use 'fit' with xgb_model to continue training
-        # But for simplicity/stability in this demo, we assume we are just verifying the API 
         if HAS_ML:
             # Using 'xgb_model' parameter allows continuation of training in XGBoost API
             self.model.fit(X_new, y_new, xgb_model=self.model.get_booster())
@@ -121,3 +118,23 @@ class SentinelGBMModel:
             self.metadata['last_updated'] = datetime.now().isoformat()
             self.save_weights("polymer_xgb_checkpoint")
             print(f"🔄 Checkpoint saved at step {step_count}")
+    
+    def predict(self, X):
+        """
+        Inference method for GBM models.
+        
+        Args:
+            X: Feature matrix (list of lists or numpy array)
+            
+        Returns:
+            float or array: Predicted value(s)
+        """
+        if not HAS_ML or self.model == "MOCK_GBM_OBJECT":
+            # Mock prediction
+            return float(np.random.randn() * 10 + 100)
+        
+        predictions = self.model.predict(X)
+        # Return single value if input is single sample
+        if len(predictions) == 1:
+            return float(predictions[0])
+        return predictions

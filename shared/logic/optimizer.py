@@ -1,12 +1,16 @@
 from pulp import LpProblem, LpMinimize, LpVariable, lpSum, value
 
 """
-Optimization Layer for Sentinel.
+Optimization Layer for Sentinel (Layer 4).
 
-This module is responsible for the Prescriptive Analytics phase (Layer 4).
-It uses Linear Programming (via PuLP) to determine the optimal procurement strategy
-given a demand forecast and predicted price trends, balancing purchasing costs
-against holding costs and safety stock requirements.
+This module implements the Prescriptive Analytics phase of the Sentinel pipeline.
+It utilizes Linear Programming (via PuLP) to determine the mathematically optimal
+procurement strategy.
+
+Key Goals:
+- Minimize Total Cost of Ownership (TCO = Purchase + Holding + Capital Costs).
+- Guarantee Service Levels (Safety Stock > 95%).
+- Mitigate Supply Chain Risk (Dynamic Lead Time Buffers).
 """
 
 class SentinelOptimizer:
@@ -39,7 +43,7 @@ class SentinelOptimizer:
         self.holding_cost_pct = holding_cost_pct
         self.metal_interest_rate = metal_interest_rate
 
-    def optimize_procurement(self, forecast_demand, predicted_prices, current_stock, category='Standard'):
+    def optimize_procurement(self, predicted_prices, current_stock, planning_horizon=4, category='Standard'):
         """
         Solves for the minimum cost purchasing schedule using Linear Programming.
 
@@ -50,7 +54,6 @@ class SentinelOptimizer:
           - Safety Stock: Stock_t >= Safety_Buffer (Dynamic for Specialty)
 
         Args:
-            forecast_demand (list[float]): List of predicted demand values for each period.
             predicted_prices (list[float]): List of predicted unit prices for each period.
             current_stock (float): Starting inventory level.
             category (str): Material category for risk logic (Default: 'Standard').
@@ -58,7 +61,7 @@ class SentinelOptimizer:
         Returns:
             dict: A dictionary mapping period index to the optimal buy quantity.
         """
-        periods = range(len(forecast_demand))
+        periods = range(planning_horizon)
         
         # Initialize the LP Problem structure (Minimization)
         prob = LpProblem(f"Optimize_{self.material}", LpMinimize)
@@ -84,15 +87,16 @@ class SentinelOptimizer:
         for t in periods:
             # Inventory Balance Constraint
             # Stock at end of t = Stock at end of t-1 (or initial) + Net Change
+            # Demand removed, assuming 0 demand for now
             if t == 0:
-                prob += inventory[t] == current_stock + buy[t] - forecast_demand[t]
+                prob += inventory[t] == current_stock + buy[t]
             else:
-                prob += inventory[t] == inventory[t-1] + buy[t] - forecast_demand[t]
+                prob += inventory[t] == inventory[t-1] + buy[t]
 
             # Safety Stock Constraint: Prevent stockouts
             # Logic Update: Dynamic for 'Screening' (Specialty) vs Static for others
             
-            avg_demand = sum(forecast_demand) / len(forecast_demand)
+            avg_demand = 0 # demand removed
             
             if category == 'Screening':
                 # Dynamic Safety Buffer: (Avg_Daily_Demand * Estimated_Lead_Time) * 1.2

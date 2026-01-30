@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS countries (
 -- Seed Initial Data (Idempotent)
 INSERT INTO materials (name, category) VALUES 
 ('Copper', 'Shielding'), ('Aluminum', 'Shielding'), ('PVC', 'Polymer'), ('XLPE', 'Polymer'),
-('PE', 'Polymer'), ('LSF', 'Polymer'), ('GSW', 'Shielding'), ('Copper Tape', 'Shielding'),
+('PE', 'Polymer'), ('LSF', 'Polymer'), ('GSW', 'Shielding'), ('GST', 'Shielding'), ('Copper Tape', 'Shielding'),
 ('Aluminum Tape', 'Shielding'), ('Mica Tape', 'Screening'), ('Water-blocking', 'Screening')
 ON CONFLICT (name) DO NOTHING;
 
@@ -55,9 +55,9 @@ CREATE TABLE IF NOT EXISTS ai_signals (
     material_id INT REFERENCES materials(id), -- FK
     country_id INT REFERENCES countries(id),  -- FK
     input_price DECIMAL(10, 2) NOT NULL,
-    predicted_demand DECIMAL(10, 2),
     decision VARCHAR(20) NOT NULL,
     confidence_score DECIMAL(5, 2),
+    stockout_risk DECIMAL(5, 4), -- Percentage (0.0000 to 1.0000)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

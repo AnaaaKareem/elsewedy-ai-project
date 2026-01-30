@@ -2,7 +2,7 @@
 requests
 pandas
 fredapi
-psycopg2
+psycopg2-binary
 pika
 hvac
 redis
@@ -11,3 +11,4 @@ scikit-learn
 pulp
 torch
 xgboost
+sqlalchemy

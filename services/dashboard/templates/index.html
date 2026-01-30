@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel | Supply Chain Intelligence</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <!-- LEFT PANEL: Country Details -->
+        <aside class="sidebar-left glass-panel">
+            <div class="panel-header">
+                <h2>Regional Intel</h2>
+                <div class="status-dot"></div>
+            </div>
+            
+            <div id="country-info" class="content-area hidden">
+                <h1 id="selected-country-name">Select Region</h1>
+                
+                <div class="stat-box">
+                    <span class="label">Economic Health</span>
+                    <span class="value" id="econ-health">--</span>
+                </div>
+                
+                <div class="stat-box">
+                    <span class="label">Demand Index</span>
+                    <span class="value highlight" id="demand-index">--</span>
+                </div>
+                
+                <div class="stat-box">
+                    <span class="label">Active Projects</span>
+                    <span class="value" id="active-projects">--</span>
+                </div>
+                
+                 <div class="stat-box danger">
+                    <span class="label">Risk Level</span>
+                    <span class="value" id="risk-level">--</span>
+                </div>
+            </div>
+
+            <div id="country-placeholder" class="content-area placeholder">
+                <p>Select a country on the map to view detailed strategic intelligence.</p>
+            </div>
+        </aside>
+
+        <!-- CENTER: Map -->
+        <main class="main-map-container">
+            <div id="map"></div>
+            <div class="map-overlay">
+                <div class="system-status">
+                    <span class="status-indicator active"></span> SYSTEM ONLINE
+                </div>
+            </div>
+        </main>
+
+        <!-- RIGHT PANEL: Material Cards -->
+        <aside class="sidebar-right glass-panel">
+            <div class="panel-header">
+                <h2>Market Pulse</h2>
+                <span class="live-badge">LIVE</span>
+            </div>
+            
+            <div id="material-list" class="scroller">
+                <!-- Cards will be injected here by JS -->
+                <div class="loading-spinner">Initializing Feed...</div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- App JS -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

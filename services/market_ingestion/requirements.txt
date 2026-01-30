@@ -1,3 +1,5 @@
 requests
 pika
 hvac
+psycopg2-binary
+sqlalchemy
