@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install python dependencies to a temporary location
 COPY services/market_ingestion/requirements.txt /requirements.txt
-RUN pip install --no-cache-dir --prefix=/install -r /requirements.txt
+RUN pip install --no-cache-dir --default-timeout=1000 --prefix=/install -r /requirements.txt
 
 # --- Stage 2: Runtime ---
 FROM python:3.9-slim-bullseye
